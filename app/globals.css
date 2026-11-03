@@ -1,0 +1,85 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+  --paper: #f2eee7;
+  --ink: #18201e;
+  --muted: #59615c;
+  --copper: #a56f48;
+  --rule: #d1c5b7;
+  --surface: #fbfaf7;
+  --table-head: #eeece6;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  min-height: 100vh;
+  background: #f7f4ef;
+}
+
+::selection {
+  background: rgba(165, 111, 72, 0.22);
+}
+
+:focus-visible {
+  outline: 2px solid var(--copper);
+  outline-offset: 3px;
+}
+
+@layer components {
+  .editorial-copy {
+    @apply text-base leading-7 text-muted;
+  }
+
+  .form-field {
+    display: block;
+    width: 100%;
+    border: 1px solid var(--rule);
+    background: var(--surface);
+    padding: 0.75rem 0.875rem;
+    color: var(--ink);
+    font-size: 0.875rem;
+    line-height: 1.25rem;
+    outline: none;
+    transition: border-color 150ms ease;
+  }
+
+  .form-field::placeholder {
+    color: var(--muted);
+    opacity: 0.7;
+  }
+
+  .form-field:focus {
+    border-color: var(--ink);
+  }
+}
+
+@layer utilities {
+  .bg-surface {
+    background-color: var(--surface);
+  }
+
+  .bg-table-head {
+    background-color: var(--table-head);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}
