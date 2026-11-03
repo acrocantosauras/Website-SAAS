@@ -3,8 +3,11 @@
 import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { AlertTriangle, ArrowLeft, ArrowRight, Check, Copy, Download, FileUp, LoaderCircle, Search } from 'lucide-react';
+import { EmptyState } from '@/components/empty-state';
+import { PageHeader } from '@/components/page-header';
+import { StatusPill } from '@/components/status-pill';
 import { parseContactsCsv, type ContactCsvResult, type ParsedContactRow } from '@/lib/csv';
-import { downloadCsv } from '@/lib/download';
+import { csvFilename, downloadCsv, outreachCsvRows } from '@/lib/download';
 import { getOutreachQualityChecks, productDemoService, type OutreachDraft, type OutreachRun, type OutreachSettings } from '@/lib/product-demo-service';
 
 type Step = 'input' | 'review' | 'processing' | 'failed' | 'results';
@@ -19,6 +22,16 @@ const defaultSettings: OutreachSettings = {
   length: 'Standard',
   callToAction: '',
 };
+
+const toneOptions: OutreachSettings['tone'][] = ['Warm and professional', 'Direct and concise', 'Thoughtful and consultative'];
+const lengthOptions: OutreachSettings['length'][] = ['Short', 'Standard'];
+
+const steps: { key: Step; label: string }[] = [
+  { key: 'input', label: 'Add contacts' },
+  { key: 'review', label: 'Preview' },
+  { key: 'processing', label: 'Demo run' },
+  { key: 'results', label: 'Drafts' },
+];
 
 function getErrorMessage(error: unknown) {
   if (error instanceof Error) return error.message;
@@ -93,6 +106,7 @@ export function OutreachWorkflow() {
   function parseAndReview(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError('');
+    setNotice('');
     try {
       setParsed(parseContactsCsv(csv));
       setStep('review');
@@ -185,22 +199,12 @@ export function OutreachWorkflow() {
     const drafts = target.drafts.filter((draft) => !onlySelected || selectedIds.includes(draft.id));
     if (!drafts.length) {
       setError('Select at least one draft before downloading.');
+      setNotice('');
       return;
     }
-    downloadCsv(`${target.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-drafts.csv`, [
-      ['Name', 'Company', 'Email', 'Subject', 'Draft', 'Review status', 'Quality notes'],
-      ...drafts.map(({ contact, subject, body, status, qualityChecks }) => [
-        contact.firstName,
-        contact.company,
-        contact.email,
-        subject,
-        body,
-        status,
-        qualityChecks.join('; '),
-      ]),
-    ]);
+    downloadCsv(csvFilename(target.name, 'drafts'), outreachCsvRows(drafts));
     setError('');
-    setNotice(`CSV download requested for ${drafts.length} draft${drafts.length === 1 ? '' : 's'}.`);
+    setNotice(`CSV download requested for ${drafts.length} draft${drafts.length === 1 ? '' : 's'}, including review status and quality notes.`);
   }
 
   function updateDrafts(drafts: OutreachDraft[]) {
@@ -231,7 +235,7 @@ export function OutreachWorkflow() {
       setCopiedId(draft.id);
       setNotice('Draft copied to clipboard.');
       setError('');
-      window.setTimeout(() => setCopiedId((id) => id === draft.id ? null : id), 1800);
+      window.setTimeout(() => setCopiedId((id) => (id === draft.id ? null : id)), 1800);
     } catch (reason: unknown) {
       setError(getErrorMessage(reason));
     }
@@ -243,112 +247,226 @@ export function OutreachWorkflow() {
     return run.drafts.filter((draft) => {
       const matchesSearch = `${draft.contact.firstName} ${draft.contact.company} ${draft.contact.role} ${draft.contact.email} ${draft.subject}`
         .toLowerCase().includes(query);
-      const matchesFilter = filter === 'all' || (filter === 'with-context' ? Boolean(draft.contact.context.trim()) : draft.status === 'Needs review');
+      const matchesFilter =
+        filter === 'all' ||
+        (filter === 'with-context'
+          ? Boolean(draft.contact.context.trim())
+          : draft.qualityChecks.some((check) => check.startsWith('Review:')));
       return matchesSearch && matchesFilter;
     });
   }, [filter, run, search]);
-  const activeIndex = step === 'failed' ? 2 : ['input', 'review', 'processing', 'results'].indexOf(step);
+  const activeIndex = step === 'failed' ? 2 : steps.findIndex(({ key }) => key === step);
   const validContacts = parsed?.rows.filter((row) => row.errors.length === 0 && !row.duplicate) ?? [];
+  const flaggedDrafts = run?.drafts.filter((draft) => draft.qualityChecks.some((check) => check.startsWith('Review:'))).length ?? 0;
 
   return (
     <div className="space-y-6">
-      <header className="flex flex-col gap-5 border-b border-rule pb-6 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <Link href="/ai-tools" className="inline-flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted hover:text-ink"><ArrowLeft aria-hidden="true" className="h-3.5 w-3.5" /> AI products</Link>
-          <p className="mt-5 text-[10px] font-semibold uppercase tracking-[0.2em] text-copper">Self-service demo / 02</p>
-          <h1 className="mt-2 font-serif text-4xl tracking-[-0.05em] text-ink sm:text-5xl">AI Outreach</h1>
-          <p className="mt-3 max-w-2xl text-sm leading-6 text-muted">Bring contact context, set your message brief, and edit each draft before downloading. Email sending is not available.</p>
-        </div>
-        <span className="w-fit border border-rule bg-white/70 px-3 py-2 text-[10px] font-medium uppercase tracking-[0.14em] text-muted">Demo only · no payment</span>
-      </header>
+      <div className="space-y-4">
+        <Link
+          href="/ai-tools"
+          className="inline-flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted transition-colors hover:text-ink"
+        >
+          <ArrowLeft aria-hidden="true" className="h-3.5 w-3.5" /> AI products
+        </Link>
+        <PageHeader
+          eyebrow="Self-service demo / 02"
+          title="AI Outreach"
+          description="Bring contact context, set a message brief, then edit each locally generated draft before downloading. Email sending is not available."
+          actions={<span className="badge badge-neutral">Demo only · no payment</span>}
+        />
+      </div>
 
-      <nav aria-label="Outreach steps" className="grid grid-cols-4 border-y border-rule py-4">
-        {([['input', 'Add contacts'], ['review', 'Preview'], ['processing', 'Demo run'], ['results', 'Drafts']] as [Step, string][]).map(([key, label], index) => (
-          <div key={key} className="flex items-center gap-2 sm:gap-3">
-            <span className={`flex h-7 w-7 shrink-0 items-center justify-center border text-[10px] font-medium ${index <= activeIndex ? 'border-ink bg-ink text-white' : 'border-rule text-muted'}`}>{String(index + 1).padStart(2, '0')}</span>
-            <span className={`hidden text-[10px] font-medium uppercase tracking-[0.12em] sm:block ${index === activeIndex ? 'text-ink' : 'text-muted'}`}>{label}</span>
-          </div>
-        ))}
+      <nav aria-label="Outreach steps" className="animate-rise">
+        <ol className="grid grid-cols-4 gap-2 border-y border-rule py-4">
+          {steps.map(({ key, label }, index) => {
+            const state = index < activeIndex ? 'done' : index === activeIndex ? 'current' : 'upcoming';
+            return (
+              <li key={key} className="flex min-w-0 items-center gap-2 sm:gap-3">
+                <span
+                  aria-hidden="true"
+                  className={`flex h-7 w-7 shrink-0 items-center justify-center border text-[10px] font-medium ${
+                    state === 'upcoming' ? 'border-rule text-muted' : 'border-ink bg-ink text-white'
+                  }`}
+                >
+                  {state === 'done' ? <Check className="h-3.5 w-3.5" /> : String(index + 1).padStart(2, '0')}
+                </span>
+                <span
+                  className={`hidden min-w-0 truncate text-[10px] font-medium uppercase tracking-[0.12em] sm:block ${
+                    state === 'current' ? 'text-ink' : 'text-muted'
+                  }`}
+                >
+                  {label}
+                  {state === 'current' ? <span className="sr-only"> (current step)</span> : null}
+                </span>
+              </li>
+            );
+          })}
+        </ol>
       </nav>
-      {error ? <p role="alert" className="border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-900">{error}</p> : null}
-      {notice ? <p role="status" className="border border-sage bg-sage/40 px-4 py-3 text-sm text-ink">{notice}</p> : null}
+
+      {error ? (
+        <p role="alert" className="alert alert-error">
+          {error}
+        </p>
+      ) : null}
+      {notice ? (
+        <p role="status" className="alert alert-notice">
+          {notice}
+        </p>
+      ) : null}
+
       {step === 'failed' ? (
-        <section role="alert" className="max-w-3xl border border-red-300 bg-red-50 p-5 sm:p-7">
-          <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-red-800">{run?.status === 'processing' ? 'Run needs resuming' : 'Demo run failed'}</p>
+        <section role="alert" className="animate-rise max-w-3xl border border-red-300 bg-red-50 p-5 sm:p-7">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-red-800">
+            {run?.status === 'processing' ? 'Run needs resuming' : 'Demo run failed'}
+          </p>
           <h2 className="mt-2 font-serif text-2xl text-ink">Your contact preview is still available.</h2>
-          <p className="mt-2 text-sm leading-6 text-red-900">{failureMessage}</p>
-          <p className="mt-2 text-xs leading-5 text-muted">Retry resumes this saved run rather than creating another batch.</p>
+          <p className="mt-2 break-words text-sm leading-6 text-red-900">{failureMessage}</p>
+          <p className="mt-2 text-xs leading-5 text-red-900/80">Retry resumes this saved run rather than creating another batch.</p>
           <div className="mt-5 flex flex-wrap gap-3">
-            <button type="button" disabled={busy} onClick={handleSimulatedPurchase} className="bg-ink px-4 py-3 text-sm font-medium text-white disabled:opacity-60">Retry this run</button>
-            <button type="button" onClick={() => setStep('review')} className="border border-rule px-4 py-3 text-sm font-medium text-ink">Review contacts</button>
-            <button type="button" onClick={() => { setRun(null); setStep('input'); }} className="border border-rule px-4 py-3 text-sm font-medium text-ink">Start a new run</button>
+            <button type="button" disabled={busy} onClick={handleSimulatedPurchase} className="btn btn-primary">
+              {busy ? 'Retrying…' : 'Retry this run'}
+            </button>
+            <button type="button" onClick={() => setStep('review')} className="btn btn-secondary !bg-white">
+              Review contacts
+            </button>
+            <button type="button" onClick={() => { setRun(null); setStep('input'); }} className="btn btn-secondary !bg-white">
+              Start a new run
+            </button>
           </div>
         </section>
       ) : null}
 
       {step === 'input' ? (
         <form onSubmit={parseAndReview} className="grid gap-8 xl:grid-cols-[1.05fr_0.95fr]">
-          <section>
+          <section className="animate-rise">
             <div className="flex border-b border-rule" role="tablist" aria-label="Contact data input method">
               {(['paste', 'upload'] as const).map((method) => (
-                <button type="button" key={method} role="tab" aria-selected={source === method} onClick={() => setSource(method)} className={`border-b-2 px-4 py-3 text-xs font-medium capitalize ${source === method ? 'border-ink text-ink' : 'border-transparent text-muted'}`}>
+                <button
+                  type="button"
+                  key={method}
+                  role="tab"
+                  aria-selected={source === method}
+                  onClick={() => setSource(method)}
+                  className={`-mb-px border-b-2 px-4 py-3 text-xs font-medium transition-colors ${
+                    source === method ? 'border-ink text-ink' : 'border-transparent text-muted hover:text-ink'
+                  }`}
+                >
                   {method === 'paste' ? 'Paste CSV' : 'Upload CSV'}
                 </button>
               ))}
             </div>
             {source === 'paste' ? (
-              <label className="mt-5 block text-xs font-medium text-ink">
+              <label className="field-label mt-5">
                 CSV content
-                <textarea required rows={8} value={csv} onChange={(event) => setCsv(event.target.value)} placeholder={exampleCsv} className="form-field mt-2 resize-y font-mono text-xs leading-6" />
+                <textarea
+                  required
+                  rows={8}
+                  value={csv}
+                  onChange={(event) => setCsv(event.target.value)}
+                  placeholder={exampleCsv}
+                  className="form-field mt-2 resize-y font-mono text-xs font-normal leading-6"
+                />
               </label>
             ) : (
               <div className="mt-5 border border-dashed border-rule bg-surface p-6 sm:p-8">
                 <label htmlFor="contact-csv" className="flex cursor-pointer flex-col items-center text-center">
                   <FileUp aria-hidden="true" className="h-7 w-7 text-copper" />
-                  <span className="mt-3 text-sm font-medium text-ink">{fileName || 'Choose a CSV file'}</span>
+                  <span className="mt-3 break-all text-sm font-medium text-ink">{fileName || 'Choose a CSV file'}</span>
                   <span className="mt-1 text-xs text-muted">CSV only · up to 1 MB · maximum 100 contacts</span>
                 </label>
                 <input id="contact-csv" type="file" accept=".csv,text/csv" onChange={handleUpload} className="sr-only" />
                 {fileName ? <p className="mt-4 text-center text-xs text-muted">File loaded. Preview to see accepted and flagged rows.</p> : null}
               </div>
             )}
-            <label className="mt-5 block text-xs font-medium text-ink">
-              Campaign name <span className="font-normal text-muted">(optional)</span>
-              <input value={campaignName} onChange={(event) => setCampaignName(event.target.value)} maxLength={70} placeholder="e.g. Operations introduction" className="form-field mt-2" />
+            <label className="field-label mt-5">
+              Campaign name <span className="ml-1 font-normal text-muted">Optional</span>
+              <input
+                value={campaignName}
+                onChange={(event) => setCampaignName(event.target.value)}
+                maxLength={70}
+                placeholder="e.g. Operations introduction"
+                className="form-field mt-2 font-normal"
+              />
             </label>
-            <p className="mt-4 text-[11px] leading-5 text-muted">Recognised columns: name/first_name, company, title/role, email, context/notes. Name or company is required. Invalid rows and duplicate emails are flagged, not included.</p>
-            <button type="submit" className="mt-5 inline-flex items-center gap-3 bg-ink px-5 py-3 text-sm font-medium text-white hover:bg-[#303b36]">Validate and preview <ArrowRight aria-hidden="true" className="h-4 w-4" /></button>
+            <p className="mt-4 text-[11px] leading-5 text-muted">
+              Recognised columns: name/first_name, company, title/role, email, context/notes. Name or company is required.
+              Invalid rows and duplicate emails are flagged, not included.
+            </p>
+            <button type="submit" className="btn btn-primary mt-5">
+              Validate and preview <ArrowRight aria-hidden="true" className="h-4 w-4" />
+            </button>
           </section>
 
-          <section className="space-y-5 border-t border-rule pt-5 xl:border-l xl:border-t-0 xl:pl-7 xl:pt-0">
+          <section className="animate-rise delay-1 space-y-5 border-t border-rule pt-6 xl:border-l xl:border-t-0 xl:pl-7 xl:pt-0">
             <div>
-              <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-copper">Message brief</p>
+              <p className="eyebrow">Message brief</p>
               <h2 className="mt-2 font-serif text-2xl text-ink">Give the draft a real point of view.</h2>
-              <p className="mt-1 text-xs text-muted">Only the details you provide are used. Missing context produces a neutral opening.</p>
+              <p className="mt-1 text-xs leading-5 text-muted">Only the details you provide are used. Missing context produces a neutral opening.</p>
             </div>
             <div className="grid gap-4 sm:grid-cols-2">
-              <label className="text-xs font-medium text-ink sm:col-span-2">Offering <span className="font-normal text-muted">Optional</span><input value={settings.offering} onChange={(event) => setSettings({ ...settings, offering: event.target.value })} maxLength={100} placeholder="What are you offering?" className="form-field mt-2" /></label>
-              <label className="text-xs font-medium text-ink sm:col-span-2">Target customer <span className="font-normal text-muted">Optional</span><input value={settings.targetCustomer} onChange={(event) => setSettings({ ...settings, targetCustomer: event.target.value })} maxLength={120} placeholder="Who is it for?" className="form-field mt-2" /></label>
-              <label className="text-xs font-medium text-ink sm:col-span-2">Customer problem <span className="font-normal text-muted">Optional</span><textarea value={settings.problem} onChange={(event) => setSettings({ ...settings, problem: event.target.value })} maxLength={240} rows={2} placeholder="What problem does it address?" className="form-field mt-2 resize-y" /></label>
-              <label className="text-xs font-medium text-ink sm:col-span-2">Value proposition <span className="font-normal text-muted">Optional</span><textarea value={settings.valueProposition} onChange={(event) => setSettings({ ...settings, valueProposition: event.target.value })} maxLength={240} rows={2} placeholder="Describe the value without unverified claims." className="form-field mt-2 resize-y" /></label>
-              <label className="text-xs font-medium text-ink">Tone<select value={settings.tone} onChange={(event) => setSettings({ ...settings, tone: event.target.value as OutreachSettings['tone'] })} className="form-field mt-2"><option>Warm and professional</option><option>Direct and concise</option><option>Thoughtful and consultative</option></select></label>
-              <label className="text-xs font-medium text-ink">Length<select value={settings.length} onChange={(event) => setSettings({ ...settings, length: event.target.value as OutreachSettings['length'] })} className="form-field mt-2"><option>Short</option><option>Standard</option></select></label>
-              <label className="text-xs font-medium text-ink sm:col-span-2">Call to action <span className="font-normal text-muted">Optional</span><input value={settings.callToAction} onChange={(event) => setSettings({ ...settings, callToAction: event.target.value })} maxLength={120} placeholder="e.g. Would a brief conversation be useful?" className="form-field mt-2" /></label>
+              <label className="field-label sm:col-span-2">
+                Offering <span className="ml-1 font-normal text-muted">Optional</span>
+                <input value={settings.offering} onChange={(event) => setSettings({ ...settings, offering: event.target.value })} maxLength={100} placeholder="What are you offering?" className="form-field mt-2 font-normal" />
+              </label>
+              <label className="field-label sm:col-span-2">
+                Target customer <span className="ml-1 font-normal text-muted">Optional</span>
+                <input value={settings.targetCustomer} onChange={(event) => setSettings({ ...settings, targetCustomer: event.target.value })} maxLength={120} placeholder="Who is it for?" className="form-field mt-2 font-normal" />
+              </label>
+              <label className="field-label sm:col-span-2">
+                Customer problem <span className="ml-1 font-normal text-muted">Optional</span>
+                <textarea value={settings.problem} onChange={(event) => setSettings({ ...settings, problem: event.target.value })} maxLength={240} rows={2} placeholder="What problem does it address?" className="form-field mt-2 resize-y font-normal" />
+              </label>
+              <label className="field-label sm:col-span-2">
+                Value proposition <span className="ml-1 font-normal text-muted">Optional</span>
+                <textarea value={settings.valueProposition} onChange={(event) => setSettings({ ...settings, valueProposition: event.target.value })} maxLength={240} rows={2} placeholder="Describe the value without unverified claims." className="form-field mt-2 resize-y font-normal" />
+                <span className="field-note">Numbers and unverifiable claims are flagged by the review checks.</span>
+              </label>
+
+              <SegmentedControl
+                label="Tone"
+                name="tone"
+                value={settings.tone}
+                options={toneOptions}
+                onChange={(tone) => setSettings({ ...settings, tone })}
+              />
+              <SegmentedControl
+                label="Draft length"
+                name="length"
+                value={settings.length}
+                options={lengthOptions}
+                onChange={(length) => setSettings({ ...settings, length })}
+                columns={2}
+              />
+
+              <label className="field-label sm:col-span-2">
+                Call to action <span className="ml-1 font-normal text-muted">Optional</span>
+                <input value={settings.callToAction} onChange={(event) => setSettings({ ...settings, callToAction: event.target.value })} maxLength={120} placeholder="e.g. Would a brief conversation be useful?" className="form-field mt-2 font-normal" />
+              </label>
             </div>
-            <aside className="border-l-2 border-copper bg-sage/50 p-4 text-xs leading-5 text-muted">Browser-local template demo. No AI service, enrichment provider, email provider, or sending action is connected.</aside>
+            <aside className="border-l-2 border-copper bg-sage/50 p-4 text-xs leading-5 text-muted">
+              Browser-local template demo. No AI service, enrichment provider, email provider, or sending action is connected.
+            </aside>
           </section>
         </form>
       ) : null}
 
       {step === 'review' && parsed ? (
         <section className="space-y-5">
-          <div className="border border-rule bg-surface p-5">
+          <div className="card animate-rise p-5">
             <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-              <div>
-                <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-copper">CSV validation · {parsed.rows.length} non-empty rows</p>
-                <h2 className="mt-2 font-serif text-3xl tracking-[-0.04em] text-ink">{campaignName || fileName || 'Outreach run'}</h2>
+              <div className="min-w-0">
+                <p className="eyebrow">CSV validation · {parsed.rows.length} non-empty rows</p>
+                <h2 className="mt-2 break-words font-serif text-3xl tracking-[-0.04em] text-ink">{campaignName || fileName || 'Outreach run'}</h2>
               </div>
-              <button type="button" disabled={validContacts.length === 0 || busy} onClick={handleSimulatedPurchase} className="inline-flex items-center justify-center gap-2 bg-ink px-4 py-3 text-sm font-medium text-white hover:bg-[#303b36] disabled:cursor-not-allowed disabled:opacity-40">{busy ? 'Starting demo…' : `Use ${validContacts.length} valid, unique rows`} <ArrowRight aria-hidden="true" className="h-4 w-4" /></button>
+              <button
+                type="button"
+                disabled={validContacts.length === 0 || busy}
+                onClick={handleSimulatedPurchase}
+                className="btn btn-primary shrink-0"
+              >
+                {busy ? 'Starting demo…' : `Use ${validContacts.length} valid, unique rows`} <ArrowRight aria-hidden="true" className="h-4 w-4" />
+              </button>
             </div>
             <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
               <Metric label="Accepted" value={parsed.acceptedCount} />
@@ -356,80 +474,229 @@ export function OutreachWorkflow() {
               <Metric label="Duplicate" value={parsed.duplicateCount} />
               <Metric label="Empty rows" value={parsed.emptyRows} />
             </div>
-            {(parsed.invalidCount > 0 || parsed.duplicateCount > 0) ? (
-              <p className="mt-4 border-l-2 border-copper bg-sage/40 px-3 py-2 text-xs leading-5 text-ink">Only the {parsed.acceptedCount} accepted unique rows will be used. Flagged rows remain visible below. To correct them, edit the CSV and validate it again.</p>
+            {parsed.invalidCount > 0 || parsed.duplicateCount > 0 ? (
+              <p className="alert alert-warning mt-4 !px-3 !py-2 text-xs">
+                Only the {parsed.acceptedCount} accepted unique rows will be used. Flagged rows remain visible below. To
+                correct them, edit the CSV and validate it again.
+              </p>
             ) : null}
           </div>
-          <div className="overflow-x-auto border border-rule bg-surface">
+          <div className="table-shell">
             <table className="min-w-[760px] w-full text-left text-sm">
-              <thead className="border-b border-rule bg-table-head text-[10px] uppercase tracking-[0.12em] text-muted"><tr><th className="px-4 py-3 font-medium">CSV row</th><th className="px-4 py-3 font-medium">Name / company</th><th className="px-4 py-3 font-medium">Role / email</th><th className="px-4 py-3 font-medium">Context</th><th className="px-4 py-3 font-medium">Validation</th></tr></thead>
+              <thead className="border-b border-rule bg-table-head text-[10px] uppercase tracking-[0.12em] text-muted">
+                <tr>
+                  <th scope="col" className="px-4 py-3 font-medium">CSV row</th>
+                  <th scope="col" className="px-4 py-3 font-medium">Name / company</th>
+                  <th scope="col" className="px-4 py-3 font-medium">Role / email</th>
+                  <th scope="col" className="px-4 py-3 font-medium">Context</th>
+                  <th scope="col" className="px-4 py-3 font-medium">Validation</th>
+                </tr>
+              </thead>
               <tbody>
                 {parsed.rows.map((row) => <ContactRow key={row.contact.sourceRow} row={row} />)}
               </tbody>
             </table>
           </div>
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <button type="button" onClick={() => setStep('input')} className="inline-flex items-center gap-2 text-sm font-medium text-ink underline underline-offset-4"><ArrowLeft aria-hidden="true" className="h-4 w-4" /> Edit CSV or brief</button>
+            <button type="button" onClick={() => setStep('input')} className="link-underline inline-flex items-center gap-2">
+              <ArrowLeft aria-hidden="true" className="h-4 w-4" /> Edit CSV or brief
+            </button>
             <p className="text-[11px] text-muted">No price is shown; checkout is simulated and takes no payment.</p>
           </div>
         </section>
       ) : null}
 
       {step === 'processing' ? (
-        <section aria-live="polite" className="flex min-h-64 max-w-3xl flex-col items-start justify-center border border-rule bg-surface p-6">
+        <section aria-live="polite" className="card animate-rise flex min-h-64 max-w-3xl flex-col items-start justify-center p-6">
           <LoaderCircle aria-hidden="true" className="h-7 w-7 animate-spin text-copper motion-reduce:animate-none" />
-          <p className="mt-5 text-[10px] font-semibold uppercase tracking-[0.18em] text-copper">Simulated processing</p>
+          <p className="mt-5 eyebrow">Simulated processing</p>
           <h2 className="mt-2 font-serif text-3xl text-ink">Preparing review drafts</h2>
-          <p className="mt-3 text-sm text-muted">A local template is being used; no AI API call or email send takes place.</p>
+          <p className="mt-3 text-sm leading-6 text-muted">A local template is being used; no AI API call or email send takes place.</p>
         </section>
       ) : null}
 
       {step === 'results' && run ? (
         <section className="space-y-5">
-          <div className="flex flex-col gap-4 border border-rule bg-surface p-5 sm:flex-row sm:items-end sm:justify-between">
-            <div>
-              <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-copper">Drafts ready · local demo</p>
-              <h2 className="mt-2 font-serif text-3xl tracking-[-0.04em] text-ink">{run.name}</h2>
-              <p className="mt-2 text-sm text-muted">{run.drafts.length} drafts · heuristic review checks only, not an AI quality score · nothing is sent</p>
+          <div className="card animate-rise flex flex-col gap-4 p-5 lg:flex-row lg:items-end lg:justify-between">
+            <div className="min-w-0">
+              <p className="eyebrow">Drafts ready · local demo</p>
+              <h2 className="mt-2 break-words font-serif text-3xl tracking-[-0.04em] text-ink">{run.name}</h2>
+              <p className="mt-2 text-sm leading-6 text-muted">
+                {run.drafts.length} draft{run.drafts.length === 1 ? '' : 's'} · {flaggedDrafts} flagged by heuristic review
+                checks · nothing is sent
+              </p>
             </div>
             <div className="flex flex-wrap gap-2">
-              <button type="button" onClick={() => exportDrafts(run, true)} className="inline-flex items-center gap-2 border border-rule px-3 py-3 text-sm font-medium text-ink hover:border-ink"><Download aria-hidden="true" className="h-4 w-4" /> Selected ({selectedIds.length})</button>
-              <button type="button" onClick={() => exportDrafts(run)} className="inline-flex items-center gap-2 bg-ink px-3 py-3 text-sm font-medium text-white hover:bg-[#303b36]"><Download aria-hidden="true" className="h-4 w-4" /> All drafts</button>
+              <button type="button" onClick={() => exportDrafts(run, true)} className="btn btn-secondary">
+                <Download aria-hidden="true" className="h-4 w-4" /> Selected ({selectedIds.length})
+              </button>
+              <button type="button" onClick={() => exportDrafts(run)} className="btn btn-primary">
+                <Download aria-hidden="true" className="h-4 w-4" /> All drafts
+              </button>
             </div>
           </div>
+
           <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
-            <label className="relative block"><span className="sr-only">Search drafts</span><Search aria-hidden="true" className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search name, company, role, email…" className="form-field pl-10" /></label>
-            <label className="sr-only">Filter drafts</label><select value={filter} onChange={(event) => setFilter(event.target.value as typeof filter)} className="form-field"><option value="all">All drafts</option><option value="needs-review">Needs review</option><option value="with-context">Context supplied</option></select>
+            <label className="relative block">
+              <span className="sr-only">Search drafts</span>
+              <Search aria-hidden="true" className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" />
+              <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search name, company, role, email…" className="form-field pl-10" />
+            </label>
+            <label>
+              <span className="sr-only">Filter drafts</span>
+              <select value={filter} onChange={(event) => setFilter(event.target.value as typeof filter)} className="form-field">
+                <option value="all">All drafts</option>
+                <option value="needs-review">Flagged by checks</option>
+                <option value="with-context">Context supplied</option>
+              </select>
+            </label>
           </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-3 text-[11px] text-muted">
+            <p>
+              Showing {visibleDrafts.length} of {run.drafts.length} · heuristic checks only, not an AI quality score
+            </p>
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => setSelectedIds(visibleDrafts.map((draft) => draft.id))}
+                className="link-underline !text-[11px]"
+              >
+                Select visible
+              </button>
+              <button type="button" onClick={() => setSelectedIds([])} className="link-underline !text-[11px]">
+                Clear selection
+              </button>
+            </div>
+          </div>
+
           <div className="space-y-4">
-            {visibleDrafts.map((draft) => <DraftCard key={draft.id} draft={draft} selected={selectedIds.includes(draft.id)} copied={copiedId === draft.id} onSelect={() => setSelectedIds((ids) => ids.includes(draft.id) ? ids.filter((id) => id !== draft.id) : [...ids, draft.id])} onCopy={() => copyDraft(draft)} onChange={(field, value) => updateDrafts(run.drafts.map((entry) => entry.id === draft.id ? { ...entry, [field]: value } : entry))} onSave={saveDrafts} />)}
-            {visibleDrafts.length === 0 ? <p className="border border-dashed border-rule p-6 text-center text-sm text-muted">No drafts match this search.</p> : null}
+            {visibleDrafts.map((draft) => (
+              <DraftCard
+                key={draft.id}
+                draft={draft}
+                selected={selectedIds.includes(draft.id)}
+                copied={copiedId === draft.id}
+                onSelect={() => setSelectedIds((ids) => (ids.includes(draft.id) ? ids.filter((id) => id !== draft.id) : [...ids, draft.id]))}
+                onCopy={() => copyDraft(draft)}
+                onChange={(field, value) =>
+                  updateDrafts(run.drafts.map((entry) => (entry.id === draft.id ? { ...entry, [field]: value } : entry)))
+                }
+                onSave={saveDrafts}
+              />
+            ))}
+            {visibleDrafts.length === 0 ? (
+              <EmptyState
+                title="No drafts match these filters"
+                description="Clear the search or switch the filter back to all drafts."
+                actions={
+                  <button type="button" onClick={() => { setSearch(''); setFilter('all'); }} className="btn btn-secondary !py-2 text-xs">
+                    Clear filters
+                  </button>
+                }
+              />
+            ) : null}
           </div>
-          <button type="button" onClick={() => { setCsv(''); setFileName(''); setParsed(null); setRun(null); setStep('input'); setNotice(''); }} className="text-sm font-medium text-ink underline underline-offset-4">Start another demo run</button>
+
+          <p className="text-[11px] leading-5 text-muted">
+            Exports contain the subject and body exactly as edited, plus the review status and quality notes.
+          </p>
+
+          <button
+            type="button"
+            onClick={() => { setCsv(''); setFileName(''); setParsed(null); setRun(null); setStep('input'); setNotice(''); setSearch(''); setFilter('all'); setSelectedIds([]); }}
+            className="link-underline"
+          >
+            Start another demo run
+          </button>
         </section>
       ) : null}
     </div>
   );
 }
 
+function SegmentedControl<T extends string>({
+  label,
+  name,
+  value,
+  options,
+  onChange,
+  columns = 3,
+}: {
+  label: string;
+  name: string;
+  value: T;
+  options: T[];
+  onChange: (value: T) => void;
+  columns?: 2 | 3;
+}) {
+  return (
+    <fieldset className="sm:col-span-2">
+      <legend className="field-label">{label}</legend>
+      <div className={`mt-2 grid grid-cols-1 gap-2 ${columns === 2 ? 'sm:grid-cols-2' : 'sm:grid-cols-3'}`}>
+        {options.map((option) => (
+          <label key={option} className="relative block cursor-pointer">
+            <input
+              type="radio"
+              name={name}
+              value={option}
+              checked={value === option}
+              onChange={() => onChange(option)}
+              className="peer sr-only"
+            />
+            <span className="flex h-full items-center justify-center border border-rule bg-surface px-3 py-2.5 text-center text-[11px] leading-4 text-ink transition-colors hover:border-ink peer-checked:border-ink peer-checked:bg-ink peer-checked:text-white peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-copper">
+              {option}
+            </span>
+          </label>
+        ))}
+      </div>
+    </fieldset>
+  );
+}
+
 function Metric({ label, value }: { label: string; value: number }) {
-  return <div className="border border-rule bg-surface p-3"><p className="text-[9px] font-semibold uppercase tracking-[0.14em] text-muted">{label}</p><p className="mt-1 font-serif text-2xl text-ink">{value}</p></div>;
+  return (
+    <div className="border border-rule bg-surface p-3">
+      <p className="text-[9px] font-semibold uppercase tracking-[0.14em] text-muted">{label}</p>
+      <p className="mt-1 font-serif text-2xl text-ink">{value}</p>
+    </div>
+  );
 }
 
 function ContactRow({ row }: { row: ParsedContactRow }) {
   const status = row.errors.length ? 'Invalid' : row.duplicate ? 'Duplicate' : 'Accepted';
   return (
-    <tr className="border-b border-rule last:border-0 align-top">
+    <tr className="border-b border-rule align-top last:border-0">
       <td className="px-4 py-3 text-xs text-muted">{row.contact.sourceRow}</td>
-      <td className="px-4 py-3"><p className="font-medium text-ink">{row.contact.firstName || '—'}</p><p className="mt-1 text-xs text-muted">{row.contact.company || '—'}</p></td>
-      <td className="px-4 py-3 text-xs text-muted">{row.contact.role || '—'}<br />{row.contact.email || 'No email supplied'}</td>
+      <td className="px-4 py-3">
+        <p className="break-words font-medium text-ink">{row.contact.firstName || '—'}</p>
+        <p className="mt-1 break-words text-xs text-muted">{row.contact.company || '—'}</p>
+      </td>
+      <td className="px-4 py-3 text-xs text-muted">
+        <span className="block break-words">{row.contact.role || '—'}</span>
+        <span className="mt-1 block break-all">{row.contact.email || 'No email supplied'}</span>
+      </td>
       <td className="max-w-xs px-4 py-3 text-xs text-muted">{row.contact.context || '—'}</td>
-      <td className="px-4 py-3"><span className={`border px-2 py-1 text-[9px] font-semibold uppercase tracking-[0.1em] ${status === 'Accepted' ? 'border-sage bg-sage/50 text-ink' : 'border-copper/40 bg-copper/10 text-ink'}`}>{status}</span>{row.errors.map((message) => <p key={message} className="mt-1 max-w-xs text-[11px] text-red-800">{message}</p>)}{row.duplicate ? <p className="mt-1 max-w-xs text-[11px] text-muted">Email repeats an earlier CSV row.</p> : null}</td>
+      <td className="px-4 py-3">
+        <StatusPill label={status} tone={status === 'Accepted' ? 'positive' : 'warning'} />
+        {row.errors.map((message) => (
+          <p key={message} className="mt-1 max-w-xs text-[11px] leading-4 text-red-800">{message}</p>
+        ))}
+        {row.duplicate ? <p className="mt-1 max-w-xs text-[11px] leading-4 text-muted">Email repeats an earlier CSV row.</p> : null}
+      </td>
     </tr>
   );
 }
 
-function DraftCard({ draft, selected, copied, onSelect, onCopy, onChange, onSave }: {
+function DraftCard({
+  draft,
+  selected,
+  copied,
+  onSelect,
+  onCopy,
+  onChange,
+  onSave,
+}: {
   draft: OutreachDraft;
   selected: boolean;
   copied: boolean;
@@ -438,22 +705,109 @@ function DraftCard({ draft, selected, copied, onSelect, onCopy, onChange, onSave
   onSave: () => void;
   onChange: (field: 'subject' | 'body', value: string) => void;
 }) {
+  const review = draft.qualityChecks.filter((check) => check.startsWith('Review:'));
+  const passed = draft.qualityChecks.filter((check) => !check.startsWith('Review:'));
+  const recipient = draft.contact.firstName || 'Contact';
+  const organisation = [draft.contact.company, draft.contact.role].filter(Boolean).join(' · ');
+
   return (
-    <article className="border border-rule bg-surface p-5">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <p className="text-[9px] font-semibold uppercase tracking-[0.16em] text-muted">{draft.contact.firstName || 'Contact'}{draft.contact.company ? ` · ${draft.contact.company}` : ''}{draft.contact.role ? ` · ${draft.contact.role}` : ''}</p>
-          <p className="mt-1 text-xs text-muted">{draft.contact.email || 'No email supplied'} · {draft.status}</p>
+    <article className="card animate-rise-sm">
+      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-rule p-5">
+        <div className="min-w-0">
+          <p className="text-[9px] font-semibold uppercase tracking-[0.16em] text-muted">Recipient</p>
+          <h3 className="mt-1 break-words font-serif text-2xl leading-tight tracking-[-0.03em] text-ink">{recipient}</h3>
+          {organisation ? <p className="mt-1 break-words text-xs text-muted">{organisation}</p> : null}
+          <p className="mt-1 break-all text-xs text-muted">{draft.contact.email || 'No email supplied'}</p>
         </div>
-        <label className="inline-flex items-center gap-2 text-xs text-ink"><input type="checkbox" checked={selected} onChange={onSelect} className="h-4 w-4 accent-copper" /> Include in download</label>
+        <div className="flex flex-wrap items-center gap-3">
+          <StatusPill label={draft.status} tone="warning" />
+          <label className="inline-flex items-center gap-2 text-xs text-ink">
+            <input type="checkbox" checked={selected} onChange={onSelect} className="h-4 w-4 accent-copper" />
+            Include in download
+          </label>
+        </div>
       </div>
-      <label className="mt-4 block text-[10px] font-semibold uppercase tracking-[0.14em] text-muted">Subject<input value={draft.subject} onChange={(event) => onChange('subject', event.target.value)} onBlur={onSave} maxLength={120} className="form-field mt-2 font-normal normal-case tracking-normal" /></label>
-      <label className="mt-4 block text-[10px] font-semibold uppercase tracking-[0.14em] text-muted">Draft body<textarea value={draft.body} onChange={(event) => onChange('body', event.target.value)} onBlur={onSave} maxLength={3000} rows={7} className="form-field mt-2 resize-y font-normal normal-case leading-6 tracking-normal" /></label>
-      <p className="mt-3 text-xs leading-5 text-muted"><span className="font-semibold text-ink">Why this draft:</span> {draft.rationale}</p>
-      <p className="mt-3 text-[9px] font-semibold uppercase tracking-[0.12em] text-muted">Heuristic review checks · not an AI score</p>
-      <ul aria-label="Heuristic draft review checks" className="mt-2 flex flex-wrap gap-x-4 gap-y-1">{draft.qualityChecks.map((check) => <li key={check} className={`inline-flex items-center gap-1 text-[10px] ${check.startsWith('Review:') ? 'text-amber-800' : 'text-muted'}`}>{check.startsWith('Review:') ? <AlertTriangle aria-hidden="true" className="h-3 w-3 text-amber-700" /> : <Check aria-hidden="true" className="h-3 w-3 text-copper" />}{check}</li>)}</ul>
-      <button type="button" onClick={onCopy} className="mt-4 inline-flex items-center gap-2 border border-rule px-3 py-2 text-xs font-medium text-ink hover:border-ink"><Copy aria-hidden="true" className="h-3.5 w-3.5" />{copied ? 'Copied' : 'Copy draft'}</button>
-      <p className="mt-3 text-[10px] text-muted">Edits are saved to this browser’s demo history. Review and personalize before any real-world use.</p>
+
+      <div className="space-y-4 p-5">
+        <label className="field-label">
+          <span className="flex items-baseline justify-between gap-3">
+            Subject line
+            <span className="font-normal text-[10px] text-muted">{draft.subject.length} / 120</span>
+          </span>
+          <input
+            value={draft.subject}
+            onChange={(event) => onChange('subject', event.target.value)}
+            onBlur={onSave}
+            maxLength={120}
+            className="form-field mt-2 font-normal normal-case tracking-normal"
+          />
+        </label>
+
+        <label className="field-label">
+          <span className="flex items-baseline justify-between gap-3">
+            Email body
+            <span className={`font-normal text-[10px] ${draft.body.length > 1200 ? 'text-red-800' : 'text-muted'}`}>
+              {draft.body.length} / 1200
+            </span>
+          </span>
+          <textarea
+            value={draft.body}
+            onChange={(event) => onChange('body', event.target.value)}
+            onBlur={onSave}
+            maxLength={3000}
+            rows={7}
+            className="form-field mt-2 resize-y font-normal normal-case leading-6 tracking-normal"
+          />
+        </label>
+
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className={`border p-3 ${review.length ? 'border-copper/40 bg-copper/10' : 'border-sage bg-sage/30'}`}>
+            <p className="text-[9px] font-semibold uppercase tracking-[0.14em] text-ink">
+              Requires review ({review.length})
+            </p>
+            {review.length ? (
+              <ul className="mt-2 space-y-1.5">
+                {review.map((check) => (
+                  <li key={check} className="flex items-start gap-2 text-[11px] leading-4 text-ink">
+                    <AlertTriangle aria-hidden="true" className="mt-0.5 h-3 w-3 shrink-0 text-copper" />
+                    {check.replace(/^Review:\s*/, '')}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="mt-2 text-[11px] leading-4 text-muted">Nothing flagged by the heuristic checks.</p>
+            )}
+          </div>
+          <div className="border border-rule bg-app-canvas p-3">
+            <p className="text-[9px] font-semibold uppercase tracking-[0.14em] text-muted">Passed ({passed.length})</p>
+            <ul className="mt-2 space-y-1.5">
+              {passed.map((check) => (
+                <li key={check} className="flex items-start gap-2 text-[11px] leading-4 text-muted">
+                  <Check aria-hidden="true" className="mt-0.5 h-3 w-3 shrink-0 text-copper" />
+                  {check.replace(/^Pass:\s*/, '')}
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+
+        <div className="border-t border-rule pt-3">
+          <p className="text-[11px] leading-5 text-muted">
+            <span className="font-semibold text-ink">Why this draft:</span> {draft.rationale}
+          </p>
+          <p className="mt-2 text-[9px] font-semibold uppercase tracking-[0.12em] text-muted">
+            Heuristic review checks · not an AI score
+          </p>
+        </div>
+
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <button type="button" onClick={onCopy} className="btn btn-secondary !py-2 text-xs">
+            <Copy aria-hidden="true" className="h-3.5 w-3.5" />
+            {copied ? 'Copied' : 'Copy draft'}
+          </button>
+          <p className="text-[10px] text-muted">Edits save to this browser when you leave a field.</p>
+        </div>
+      </div>
     </article>
   );
 }
